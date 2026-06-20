@@ -1,113 +1,110 @@
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  password TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'admin',
+  id VARCHAR(255) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL DEFAULT 'admin',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at DATE NOT NULL DEFAULT CURRENT_DATE
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS borrowers (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  nic TEXT NOT NULL DEFAULT '',
-  district TEXT NOT NULL DEFAULT 'Yogapuram',
+  id VARCHAR(255) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  phone VARCHAR(100) NOT NULL,
+  nic VARCHAR(100) NOT NULL DEFAULT '',
+  district VARCHAR(255) NOT NULL DEFAULT 'Yogapuram',
   address TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('active', 'inactive')) DEFAULT 'active',
-  avatar TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  avatar VARCHAR(500),
   is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at DATE NOT NULL DEFAULT CURRENT_DATE
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_borrower_status CHECK (status IN ('active', 'inactive'))
 );
 
-ALTER TABLE borrowers ADD COLUMN IF NOT EXISTS nic TEXT NOT NULL DEFAULT '';
-ALTER TABLE borrowers ADD COLUMN IF NOT EXISTS district TEXT NOT NULL DEFAULT 'Yogapuram';
-ALTER TABLE borrowers ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
-UPDATE borrowers SET nic = '' WHERE nic IS NULL;
-UPDATE borrowers SET district = 'Yogapuram' WHERE district IS NULL OR district = '';
-ALTER TABLE borrowers ALTER COLUMN nic SET NOT NULL;
-ALTER TABLE borrowers ALTER COLUMN district SET NOT NULL;
-ALTER TABLE borrowers ALTER COLUMN is_deleted SET NOT NULL;
-
 CREATE TABLE IF NOT EXISTS loans (
-  id TEXT PRIMARY KEY,
-  borrower_id TEXT NOT NULL REFERENCES borrowers(id) ON UPDATE CASCADE,
-  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
-  interest_rate NUMERIC(8,2) NOT NULL CHECK (interest_rate >= 0),
-  duration_months INTEGER NOT NULL CHECK (duration_months > 0),
+  id VARCHAR(255) PRIMARY KEY,
+  borrower_id VARCHAR(255) NOT NULL,
+  amount DECIMAL(14,2) NOT NULL,
+  interest_rate DECIMAL(8,2) NOT NULL,
+  duration_months INT NOT NULL,
   start_date DATE NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'completed', 'overdue')) DEFAULT 'active',
-  repayment_frequency TEXT NOT NULL CHECK (repayment_frequency IN ('weekly', 'monthly')) DEFAULT 'monthly',
-  remaining_balance NUMERIC(14,2) NOT NULL CHECK (remaining_balance >= 0),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  repayment_frequency VARCHAR(20) NOT NULL DEFAULT 'monthly',
+  remaining_balance DECIMAL(14,2) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_loan_amount CHECK (amount > 0),
+  CONSTRAINT chk_loan_rate CHECK (interest_rate >= 0),
+  CONSTRAINT chk_loan_duration CHECK (duration_months > 0),
+  CONSTRAINT chk_loan_balance CHECK (remaining_balance >= 0),
+  CONSTRAINT chk_loan_status CHECK (status IN ('pending', 'active', 'completed', 'overdue')),
+  CONSTRAINT chk_loan_freq CHECK (repayment_frequency IN ('weekly', 'monthly')),
+  CONSTRAINT fk_loan_borrower FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON UPDATE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS repayments (
-  id TEXT PRIMARY KEY,
-  loan_id TEXT NOT NULL REFERENCES loans(id) ON UPDATE CASCADE,
-  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  id VARCHAR(255) PRIMARY KEY,
+  loan_id VARCHAR(255) NOT NULL,
+  amount DECIMAL(14,2) NOT NULL,
   payment_date DATE NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('paid', 'pending', 'failed')) DEFAULT 'paid',
-  method TEXT NOT NULL CHECK (method IN ('cash', 'bank_transfer', 'mobile_wallet')),
-  reference TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  status VARCHAR(20) NOT NULL DEFAULT 'paid',
+  method VARCHAR(30) NOT NULL,
+  reference VARCHAR(255),
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_repay_amount CHECK (amount > 0),
+  CONSTRAINT chk_repay_status CHECK (status IN ('paid', 'pending', 'failed')),
+  CONSTRAINT chk_repay_method CHECK (method IN ('cash', 'bank_transfer', 'mobile_wallet')),
+  CONSTRAINT fk_repay_loan FOREIGN KEY (loan_id) REFERENCES loans(id) ON UPDATE CASCADE
 );
 
-ALTER TABLE repayments ADD COLUMN IF NOT EXISTS reference TEXT;
-ALTER TABLE repayments DROP CONSTRAINT IF EXISTS repayments_method_check;
-UPDATE repayments SET method = 'mobile_wallet' WHERE method = 'upi';
-ALTER TABLE repayments ADD CONSTRAINT repayments_method_check CHECK (method IN ('cash', 'bank_transfer', 'mobile_wallet'));
-
 CREATE TABLE IF NOT EXISTS fixed_deposits (
-  id TEXT PRIMARY KEY,
-  borrower_id TEXT NOT NULL REFERENCES borrowers(id) ON UPDATE CASCADE,
-  principal_amount NUMERIC(14,2) NOT NULL CHECK (principal_amount > 0),
-  interest_rate NUMERIC(8,2) NOT NULL CHECK (interest_rate >= 0),
-  duration_months INTEGER NOT NULL CHECK (duration_months > 0),
+  id VARCHAR(255) PRIMARY KEY,
+  borrower_id VARCHAR(255) NOT NULL,
+  principal_amount DECIMAL(14,2) NOT NULL,
+  interest_rate DECIMAL(8,2) NOT NULL,
+  duration_months INT NOT NULL,
   start_date DATE NOT NULL,
   maturity_date DATE NOT NULL,
-  maturity_amount NUMERIC(14,2) NOT NULL CHECK (maturity_amount >= 0),
-  status TEXT NOT NULL CHECK (status IN ('active', 'matured', 'withdrawn')) DEFAULT 'active',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  maturity_amount DECIMAL(14,2) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_fd_principal CHECK (principal_amount > 0),
+  CONSTRAINT chk_fd_rate CHECK (interest_rate >= 0),
+  CONSTRAINT chk_fd_duration CHECK (duration_months > 0),
+  CONSTRAINT chk_fd_maturity CHECK (maturity_amount >= 0),
+  CONSTRAINT chk_fd_status CHECK (status IN ('active', 'matured', 'withdrawn')),
+  CONSTRAINT fk_fd_borrower FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON UPDATE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS collection_data (
-  month TEXT PRIMARY KEY,
-  expected NUMERIC(14,2) NOT NULL DEFAULT 0,
-  actual NUMERIC(14,2) NOT NULL DEFAULT 0
+  month VARCHAR(10) PRIMARY KEY,
+  expected DECIMAL(14,2) NOT NULL DEFAULT 0,
+  actual DECIMAL(14,2) NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
+  "key" VARCHAR(255) PRIMARY KEY,
   value JSONB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
   id SERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
+  title VARCHAR(500) NOT NULL,
   message TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('success', 'error', 'info', 'warning')) DEFAULT 'info',
+  type VARCHAR(20) NOT NULL DEFAULT 'info',
   is_unread BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_notify_type CHECK (type IN ('success', 'error', 'info', 'warning'))
 );
-
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (type IN ('success', 'error', 'info', 'warning'));
 
 CREATE TABLE IF NOT EXISTS password_reset_requests (
   id SERIAL PRIMARY KEY,
-  email TEXT NOT NULL,
-  token TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  email VARCHAR(255) NOT NULL,
+  token VARCHAR(500) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_borrowers_deleted ON borrowers(is_deleted);
-CREATE INDEX IF NOT EXISTS idx_loans_borrower_id ON loans(borrower_id);
-CREATE INDEX IF NOT EXISTS idx_repayments_loan_id ON repayments(loan_id);
-CREATE INDEX IF NOT EXISTS idx_fixed_deposits_borrower_id ON fixed_deposits(borrower_id);
 `;

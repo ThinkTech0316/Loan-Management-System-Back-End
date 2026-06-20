@@ -1,19 +1,30 @@
 import pg from 'pg';
 import { config } from './config.js';
 
-const { Pool } = pg;
+export const pool = new pg.Pool({ connectionString: config.databaseUrl });
 
-export const pool = new Pool({
-  connectionString: config.databaseUrl,
-});
-
-export const query = (text, params = []) => pool.query(text, params);
+export const query = async (text, params = []) => {
+  const result = await pool.query(text, params);
+  return {
+    rows: result.rows ?? [],
+    rowCount: result.rowCount ?? 0,
+  };
+};
 
 export const transaction = async (callback) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await callback(client);
+    const wrapped = {
+      query: async (text, params = []) => {
+        const result = await client.query(text, params);
+        return {
+          rows: result.rows ?? [],
+          rowCount: result.rowCount ?? 0,
+        };
+      },
+    };
+    const result = await callback(wrapped);
     await client.query('COMMIT');
     return result;
   } catch (error) {

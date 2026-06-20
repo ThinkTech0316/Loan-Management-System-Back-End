@@ -22,5 +22,5 @@ loadEnvFile();
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
-  databaseUrl: process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/loan_management',
+  databaseUrl: process.env.DATABASE_URL ?? 'postgresql://postgres:password@localhost:5432/loan',
 };

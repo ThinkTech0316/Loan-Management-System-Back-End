@@ -4,33 +4,53 @@ import { pool, query } from './database.js';
 import { schemaSql } from './schema.js';
 import { seedDatabase } from './seed.js';
 
-const { Pool } = pg;
-
-const quoteIdentifier = (identifier) => `"${identifier.replaceAll('"', '""')}"`;
-
 const ensureDatabaseExists = async () => {
-  const databaseUrl = new URL(config.databaseUrl);
-  const databaseName = databaseUrl.pathname.replace(/^\//, '');
-  if (!databaseName || databaseName === 'postgres') return;
+  const url = new URL(config.databaseUrl);
+  const databaseName = url.pathname.replace(/^\//, '');
+  if (!databaseName) return;
 
   const adminUrl = new URL(config.databaseUrl);
   adminUrl.pathname = '/postgres';
 
-  const adminPool = new Pool({ connectionString: adminUrl.toString() });
+  const client = new pg.Client({ connectionString: adminUrl.toString() });
   try {
-    const existing = await adminPool.query('SELECT 1 FROM pg_database WHERE datname = $1', [databaseName]);
-    if (existing.rowCount === 0) {
-      await adminPool.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
+    await client.connect();
+    const res = await client.query(
+      'SELECT datname FROM pg_database WHERE datname = $1',
+      [databaseName],
+    );
+    if (res.rows.length === 0) {
+      await client.query(`CREATE DATABASE "${databaseName}"`);
       console.log(`Created PostgreSQL database "${databaseName}".`);
     }
   } finally {
-    await adminPool.end();
+    await client.end();
   }
 };
 
 try {
   await ensureDatabaseExists();
-  await query(schemaSql);
+
+  // PostgreSQL doesn't support multiple statements in one query
+  const statements = schemaSql
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  for (const stmt of statements) {
+    await query(stmt);
+  }
+
+  const indexes = [
+    'CREATE INDEX IF NOT EXISTS idx_borrowers_deleted ON borrowers(is_deleted)',
+    'CREATE INDEX IF NOT EXISTS idx_loans_borrower_id ON loans(borrower_id)',
+    'CREATE INDEX IF NOT EXISTS idx_repayments_loan_id ON repayments(loan_id)',
+    'CREATE INDEX IF NOT EXISTS idx_fixed_deposits_borrower_id ON fixed_deposits(borrower_id)',
+  ];
+  for (const sql of indexes) {
+    try { await query(sql); } catch (e) { /* ignore if exists */ }
+  }
+
   await seedDatabase();
   console.log('PostgreSQL schema initialized and seed data applied.');
 } catch (error) {

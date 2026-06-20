@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { query, transaction } from './database.js';
 import { badRequest, conflict, notFound, unauthorized } from './errors.js';
 import {
@@ -172,7 +173,10 @@ export const login = async (payload) => {
 
   const { rows } = await query('SELECT * FROM users WHERE lower(email) = $1 AND is_active = TRUE', [email]);
   const user = rows[0];
-  if (!user || user.password !== password) throw unauthorized('Invalid email or password');
+  if (!user) throw unauthorized('Invalid email or password');
+
+  const passwordMatch = await bcrypt.compare(password, user.password);
+  if (!passwordMatch) throw unauthorized('Invalid email or password');
 
   return {
     token: Buffer.from(`${user.id}:${Date.now()}`).toString('base64url'),
@@ -197,11 +201,11 @@ export const requestPasswordReset = async (payload) => {
 export const getStats = async () => {
   const { rows } = await query(`
     SELECT
-      (SELECT COUNT(*)::int FROM loans WHERE status = 'active') AS total_active_loans,
+      (SELECT COUNT(*) FROM loans WHERE status = 'active') AS total_active_loans,
       COALESCE((SELECT SUM(remaining_balance) FROM loans WHERE status <> 'completed'), 0) AS total_outstanding,
       COALESCE((SELECT SUM(amount) FROM repayments WHERE status = 'paid'), 0) AS total_collected,
-      (SELECT COUNT(*)::int FROM loans WHERE status = 'overdue') AS overdue_count,
-      (SELECT COUNT(*)::int FROM fixed_deposits WHERE status = 'active') AS total_active_fds,
+      (SELECT COUNT(*) FROM loans WHERE status = 'overdue') AS overdue_count,
+      (SELECT COUNT(*) FROM fixed_deposits WHERE status = 'active') AS total_active_fds,
       COALESCE((SELECT SUM(principal_amount) FROM fixed_deposits), 0) AS total_deposits
   `);
 
@@ -695,12 +699,12 @@ export const deleteNotification = async (id) => {
 };
 
 export const listSettings = async () => {
-  const { rows } = await query('SELECT key, value FROM settings ORDER BY key');
+  const { rows } = await query('SELECT "key", value FROM settings ORDER BY "key"');
   return Object.fromEntries(rows.map((row) => [row.key, row.value]));
 };
 
 export const getSetting = async (key) => {
-  const { rows } = await query('SELECT value FROM settings WHERE key = $1', [key]);
+  const { rows } = await query('SELECT value FROM settings WHERE "key" = $1', [key]);
   if (rows.length === 0) throw notFound('Setting not found');
   return rows[0].value;
 };
@@ -708,10 +712,30 @@ export const getSetting = async (key) => {
 export const upsertSetting = async (key, value) => {
   if (!key || typeof key !== 'string') throw badRequest('Setting key is required');
   await query(
-    `INSERT INTO settings (key, value)
+    `INSERT INTO settings ("key", value)
      VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+     ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`,
     [key, JSON.stringify(value ?? {})],
   );
   return getSetting(key);
+};
+
+export const changePassword = async (payload) => {
+  const { currentPassword, newPassword } = payload;
+  if (!currentPassword || !newPassword) throw badRequest('Current password and new password are required');
+  if (String(newPassword).length < 6) throw badRequest('New password must be at least 6 characters');
+
+  // Find the admin user (or any active user)
+  const { rows } = await query('SELECT * FROM users WHERE is_active = TRUE LIMIT 1');
+  const user = rows[0];
+  if (!user) throw notFound('No active user found');
+  if (user.password !== currentPassword) {
+    // Also try bcrypt compare in case password was stored hashed
+    const match = await bcrypt.compare(currentPassword, user.password);
+    if (!match) throw unauthorized('Current password is incorrect');
+  }
+
+  const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+  await query('UPDATE users SET password = $1 WHERE id = $2', [hashedNewPassword, user.id]);
+  return { message: 'Password changed successfully' };
 };

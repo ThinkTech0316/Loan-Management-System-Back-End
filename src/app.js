@@ -1,9 +1,13 @@
 import { createServer } from 'node:http';
 import { URL } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { notFound } from './errors.js';
 import { handleError, parseJsonBody, sendJson, setCorsHeaders } from './http.js';
 import {
   addBorrower,
+  changePassword,
   createFixedDeposit,
   createLoan,
   deleteNotification,
@@ -38,12 +42,91 @@ import {
   upsertSetting,
 } from './services.js';
 
+const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const MIME_TYPES = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+};
+
 const ok = (res, data, statusCode = 200) => sendJson(res, statusCode, { success: true, data });
 
 const parseRoute = (req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathParts = url.pathname.split('/').filter(Boolean);
   return { url, pathParts };
+};
+
+const handleUpload = (req, res) => new Promise((resolve, reject) => {
+  const boundary = req.headers['content-type']?.split('boundary=')[1];
+  if (!boundary) {
+    reject(new Error('No boundary in content-type'));
+    return;
+  }
+
+  const chunks = [];
+  req.on('data', (chunk) => chunks.push(chunk));
+  req.on('end', () => {
+    const buffer = Buffer.concat(chunks);
+    const boundaryBuffer = Buffer.from(`--${boundary}`);
+
+    let start = buffer.indexOf(boundaryBuffer) + boundaryBuffer.length;
+    // Skip the CRLF after boundary
+    if (buffer[start] === 0x0d && buffer[start + 1] === 0x0a) start += 2;
+
+    // Find end of headers (double CRLF)
+    const headerEnd = buffer.indexOf('\r\n\r\n', start);
+    if (headerEnd === -1) { reject(new Error('Invalid multipart')); return; }
+
+    const headerSection = buffer.slice(start, headerEnd).toString();
+    const filenameMatch = headerSection.match(/filename="([^"]+)"/);
+    const filename = filenameMatch ? filenameMatch[1] : 'upload';
+
+    const dataStart = headerEnd + 4;
+    // Find closing boundary
+    const endBoundary = buffer.indexOf(boundaryBuffer, dataStart);
+    const dataEnd = endBoundary > -1 ? endBoundary - 2 : buffer.length;
+
+    const fileData = buffer.slice(dataStart, dataEnd);
+
+    const ext = path.extname(filename).toLowerCase() || '.jpg';
+    const safeName = `${randomUUID()}${ext}`;
+    const filePath = path.join(UPLOADS_DIR, safeName);
+
+    fs.writeFile(filePath, fileData, (err) => {
+      if (err) { reject(err); return; }
+      resolve(`/uploads/${safeName}`);
+    });
+  });
+  req.on('error', reject);
+});
+
+const serveStaticFile = (req, res, url) => {
+  const filePath = url.pathname.replace(/^\/uploads\//, '');
+  const sanitized = path.basename(filePath);
+  const fullPath = path.join(UPLOADS_DIR, sanitized);
+
+  if (!fs.existsSync(fullPath)) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
+  const ext = path.extname(fullPath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+  const fileContent = fs.readFileSync(fullPath);
+
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Cache-Control': 'public, max-age=86400',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(fileContent);
 };
 
 const routeRequest = async (req, res) => {
@@ -57,6 +140,12 @@ const routeRequest = async (req, res) => {
 
   const { url, pathParts } = parseRoute(req);
 
+  // Serve uploaded files
+  if (pathParts[0] === 'uploads') {
+    serveStaticFile(req, res, url);
+    return;
+  }
+
   if (req.method === 'GET' && pathParts.length === 1 && pathParts[0] === 'health') {
     ok(res, { status: 'ok', service: 'loan-management-api' });
     return;
@@ -68,6 +157,12 @@ const routeRequest = async (req, res) => {
   const id = pathParts[2];
   const subResource = pathParts[3];
 
+  if (req.method === 'POST' && resource === 'upload') {
+    const fileUrl = await handleUpload(req, res);
+    ok(res, { url: fileUrl });
+    return;
+  }
+
   if (req.method === 'POST' && resource === 'auth' && id === 'login') {
     ok(res, await login(await parseJsonBody(req)));
     return;
@@ -75,6 +170,11 @@ const routeRequest = async (req, res) => {
 
   if (req.method === 'POST' && resource === 'auth' && id === 'forgot-password') {
     ok(res, await requestPasswordReset(await parseJsonBody(req)));
+    return;
+  }
+
+  if (req.method === 'POST' && resource === 'auth' && id === 'change-password') {
+    ok(res, await changePassword(await parseJsonBody(req)));
     return;
   }
 
