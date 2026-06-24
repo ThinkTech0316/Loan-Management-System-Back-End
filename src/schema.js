@@ -1,13 +1,29 @@
-export const schemaSql = `
-CREATE TABLE IF NOT EXISTS users (
+export const globalSchemaSql = `
+CREATE TABLE IF NOT EXISTS tenants (
   id VARCHAR(255) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  company_name VARCHAR(255) NOT NULL,
+  logo_url VARCHAR(500),
+  schema_name VARCHAR(255) NOT NULL UNIQUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS global_users (
+  id VARCHAR(255) PRIMARY KEY,
+  tenant_id VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
   email VARCHAR(255) NOT NULL UNIQUE,
   password VARCHAR(255) NOT NULL,
   role VARCHAR(50) NOT NULL DEFAULT 'admin',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_global_users_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 );
+`;
+
+export const getTenantSchemaSql = (schemaName) => `
+CREATE SCHEMA IF NOT EXISTS "${schemaName}";
+SET search_path TO "${schemaName}";
 
 CREATE TABLE IF NOT EXISTS borrowers (
   id VARCHAR(255) PRIMARY KEY,
@@ -107,4 +123,4 @@ CREATE TABLE IF NOT EXISTS password_reset_requests (
   token VARCHAR(500) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-`;
+`;;

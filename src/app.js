@@ -10,6 +10,8 @@ import {
   changePassword,
   createFixedDeposit,
   createLoan,
+  deleteFixedDeposit,
+  deleteLoan,
   deleteNotification,
   deleteBorrower,
   deleteRepayment,
@@ -40,6 +42,9 @@ import {
   updateFixedDeposit,
   updateLoan,
   upsertSetting,
+  getTenantUsers,
+  createTenantUser,
+  deleteTenantUser,
 } from './services.js';
 
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
@@ -168,6 +173,12 @@ const routeRequest = async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && resource === 'tenants' && !id) {
+    const { createTenant } = await import('./services.js');
+    ok(res, await createTenant(await parseJsonBody(req)), 201);
+    return;
+  }
+
   if (req.method === 'POST' && resource === 'auth' && id === 'forgot-password') {
     ok(res, await requestPasswordReset(await parseJsonBody(req)));
     return;
@@ -208,6 +219,7 @@ const routeRequest = async (req, res) => {
     if (req.method === 'GET' && id) return ok(res, await getLoan(id));
     if (req.method === 'POST' && !id) return ok(res, await createLoan(await parseJsonBody(req)), 201);
     if ((req.method === 'PATCH' || req.method === 'PUT') && id) return ok(res, await updateLoan(id, await parseJsonBody(req)));
+    if (req.method === 'DELETE' && id) return ok(res, await deleteLoan(id));
   }
 
   if (resource === 'repayments') {
@@ -223,6 +235,7 @@ const routeRequest = async (req, res) => {
     if (req.method === 'GET' && id) return ok(res, await getFixedDeposit(id));
     if (req.method === 'POST' && !id) return ok(res, await createFixedDeposit(await parseJsonBody(req)), 201);
     if ((req.method === 'PATCH' || req.method === 'PUT') && id) return ok(res, await updateFixedDeposit(id, await parseJsonBody(req)));
+    if (req.method === 'DELETE' && id) return ok(res, await deleteFixedDeposit(id));
   }
 
   if (resource === 'notifications') {
@@ -238,12 +251,31 @@ const routeRequest = async (req, res) => {
     if ((req.method === 'PUT' || req.method === 'PATCH') && id) return ok(res, await upsertSetting(id, await parseJsonBody(req)));
   }
 
+  if (resource === 'users') {
+    if (req.method === 'GET' && !id) return ok(res, await getTenantUsers());
+    if (req.method === 'POST' && !id) return ok(res, await createTenantUser(await parseJsonBody(req)), 201);
+    if (req.method === 'DELETE' && id) return ok(res, await deleteTenantUser(id));
+  }
+
   throw notFound('Route not found');
 };
 
+import { tenantContext } from './database.js';
+
 export const createApp = () => createServer(async (req, res) => {
   try {
-    await routeRequest(req, res);
+    const tenantId = req.headers['x-tenant-id'];
+    if (tenantId) {
+      tenantContext.run(tenantId, async () => {
+        try {
+          await routeRequest(req, res);
+        } catch (error) {
+          handleError(res, error);
+        }
+      });
+    } else {
+      await routeRequest(req, res);
+    }
   } catch (error) {
     handleError(res, error);
   }

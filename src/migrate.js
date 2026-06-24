@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { config } from './config.js';
 import { pool, query } from './database.js';
-import { schemaSql } from './schema.js';
+import { globalSchemaSql } from './schema.js';
 import { seedDatabase } from './seed.js';
 
 const ensureDatabaseExists = async () => {
@@ -32,7 +32,7 @@ try {
   await ensureDatabaseExists();
 
   // PostgreSQL doesn't support multiple statements in one query
-  const statements = schemaSql
+  const statements = globalSchemaSql
     .split(';')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);

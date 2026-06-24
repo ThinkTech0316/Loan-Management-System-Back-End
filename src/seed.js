@@ -1,14 +1,18 @@
 import bcrypt from 'bcryptjs';
 import { query } from './database.js';
+import { createTenant } from './services.js';
 
 export const seedDatabase = async () => {
-  // Hash the admin password with bcrypt before storing
-  const hashedPassword = await bcrypt.hash('password123', 10);
-
-  await query(
-    `INSERT INTO users (id, name, email, password, role)
-     VALUES ('U1', 'Admin User', 'admin@vanniloan.com', $1, 'admin')
-     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, password = EXCLUDED.password`,
-    [hashedPassword],
-  );
+  const { rows } = await query('SELECT id FROM tenants WHERE schema_name = $1', ['tenant_default']);
+  if (rows.length === 0) {
+    console.log('Seeding default tenant...');
+    await createTenant({
+      name: 'Default',
+      companyName: 'VanniLoan',
+      email: 'admin@vanniloan.com',
+      password: 'password123',
+    });
+  } else {
+    console.log('Default tenant already exists.');
+  }
 };

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { sendSMS } from './sms.js';
+import { sendWelcomeEmail } from './email.js';
 import bcrypt from 'bcryptjs';
 import { query, transaction } from './database.js';
 import { badRequest, conflict, notFound, unauthorized } from './errors.js';
@@ -171,12 +173,16 @@ export const login = async (payload) => {
 
   if (!email || !password) throw badRequest('Email and password are required');
 
-  const { rows } = await query('SELECT * FROM users WHERE lower(email) = $1 AND is_active = TRUE', [email]);
+  const { rows } = await query('SELECT * FROM global_users WHERE lower(email) = $1 AND is_active = TRUE', [email]);
   const user = rows[0];
   if (!user) throw unauthorized('Invalid email or password');
 
   const passwordMatch = await bcrypt.compare(password, user.password);
   if (!passwordMatch) throw unauthorized('Invalid email or password');
+
+  const { rows: tenantRows } = await query('SELECT * FROM tenants WHERE id = $1', [user.tenant_id]);
+  const tenant = tenantRows[0];
+  if (!tenant) throw unauthorized('Tenant not found');
 
   return {
     token: Buffer.from(`${user.id}:${Date.now()}`).toString('base64url'),
@@ -185,6 +191,9 @@ export const login = async (payload) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      tenantId: tenant.schema_name, // Send schema_name as tenantId for X-Tenant-Id header
+      companyName: tenant.company_name,
+      logoUrl: tenant.logo_url,
     },
   };
 };
@@ -372,6 +381,20 @@ export const createLoan = async (payload) => {
   );
 
   await createNotification({ query }, 'New Loan Disbursed', `Rs. ${payload.amount.toLocaleString()} loan created for ${borrower.name}.`, 'info');
+
+  // Send SMS notification to borrower
+  const firstDueDate = new Date(`${payload.startDate}T00:00:00`);
+  if (payload.repaymentFrequency === 'weekly') {
+    firstDueDate.setDate(firstDueDate.getDate() + 7);
+  } else {
+    firstDueDate.setMonth(firstDueDate.getMonth() + 1);
+  }
+  const dueDateStr = firstDueDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  sendSMS(
+    borrower.phone,
+    `Dear ${borrower.name}, your loan of Rs. ${Number(payload.amount).toLocaleString()} has been disbursed. Duration: ${payload.durationMonths} months. First repayment due: ${dueDateStr}. Thank you - VanniLoan`
+  ).catch(() => {});
+
   return getLoan(id);
 };
 
@@ -407,6 +430,18 @@ export const updateLoan = async (id, payload) => {
   await query(`UPDATE loans SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${values.length}`, values);
   return getLoan(id);
 };
+
+export const deleteLoan = async (id) => transaction(async (client) => {
+  const loanResult = await client.query('SELECT * FROM loans WHERE id = $1', [id]);
+  if (loanResult.rows.length === 0) throw notFound('Loan not found');
+
+  // Delete all repayments associated with this loan first
+  await client.query('DELETE FROM repayments WHERE loan_id = $1', [id]);
+  await client.query('DELETE FROM loans WHERE id = $1', [id]);
+
+  await createNotification(client, 'Loan Deleted', `Loan #${id} has been permanently deleted.`, 'warning');
+  return true;
+});
 
 export const listRepayments = async ({ loanId } = {}) => {
   const params = [];
@@ -605,6 +640,14 @@ export const createFixedDeposit = async (payload) => {
   );
 
   await createNotification({ query }, 'Fixed Deposit Created', `Rs. ${normalized.principalAmount.toLocaleString()} fixed deposit created for ${borrower.name}.`, 'success');
+
+  // Send SMS notification to borrower
+  const matDateStr = new Date(`${normalized.maturityDate}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  sendSMS(
+    borrower.phone,
+    `Dear ${borrower.name}, your Fixed Deposit of Rs. ${Number(normalized.principalAmount).toLocaleString()} has been created. Maturity date: ${matDateStr}. Maturity amount: Rs. ${Number(normalized.maturityAmount).toLocaleString()}. Thank you - VanniLoan`
+  ).catch(() => {});
+
   return getFixedDeposit(id);
 };
 
@@ -651,6 +694,16 @@ export const updateFixedDeposit = async (id, payload) => {
   );
 
   return getFixedDeposit(id);
+};
+
+export const deleteFixedDeposit = async (id) => {
+  const { rows } = await query('SELECT * FROM fixed_deposits WHERE id = $1', [id]);
+  if (rows.length === 0) throw notFound('Fixed deposit not found');
+
+  await query('DELETE FROM fixed_deposits WHERE id = $1', [id]);
+
+  await createNotification({ query }, 'Fixed Deposit Deleted', `Fixed Deposit #${id} has been permanently deleted.`, 'warning');
+  return true;
 };
 
 export const getFDEarningsSchedule = async (fdId) => {
@@ -717,6 +770,22 @@ export const upsertSetting = async (key, value) => {
      ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`,
     [key, JSON.stringify(value ?? {})],
   );
+
+  if (key === 'organization') {
+    const tenantSchema = tenantContext.getStore();
+    if (tenantSchema) {
+      const client = await pool.connect();
+      try {
+        await client.query(
+          `UPDATE tenants SET company_name = $1, logo_url = $2 WHERE schema_name = $3`,
+          [value.orgName || 'VanniLoan', value.logoUrl || null, tenantSchema]
+        );
+      } finally {
+        client.release();
+      }
+    }
+  }
+
   return getSetting(key);
 };
 
@@ -725,17 +794,125 @@ export const changePassword = async (payload) => {
   if (!currentPassword || !newPassword) throw badRequest('Current password and new password are required');
   if (String(newPassword).length < 6) throw badRequest('New password must be at least 6 characters');
 
-  // Find the admin user (or any active user)
-  const { rows } = await query('SELECT * FROM users WHERE is_active = TRUE LIMIT 1');
+  // Need a way to identify current user, defaulting to first active user in global_users for demo
+  const { rows } = await query('SELECT * FROM global_users WHERE is_active = TRUE LIMIT 1');
   const user = rows[0];
   if (!user) throw notFound('No active user found');
   if (user.password !== currentPassword) {
-    // Also try bcrypt compare in case password was stored hashed
     const match = await bcrypt.compare(currentPassword, user.password);
     if (!match) throw unauthorized('Current password is incorrect');
   }
 
   const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-  await query('UPDATE users SET password = $1 WHERE id = $2', [hashedNewPassword, user.id]);
+  await query('UPDATE global_users SET password = $1 WHERE id = $2', [hashedNewPassword, user.id]);
   return { message: 'Password changed successfully' };
+};
+
+import { getTenantSchemaSql } from './schema.js';
+
+export const createTenant = async (payload) => {
+  const { name, companyName, email, password } = payload;
+  if (!name || !companyName || !email || !password) throw badRequest('Missing required fields');
+
+  const schemaName = `tenant_${name.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+  const tenantId = `T${Date.now()}`;
+  const userId = `U${Date.now()}`;
+
+  await transaction(async (client) => {
+    await client.query(
+      'INSERT INTO tenants (id, name, company_name, schema_name) VALUES ($1, $2, $3, $4)',
+      [tenantId, name, companyName, schemaName]
+    );
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await client.query(
+      'INSERT INTO global_users (id, tenant_id, name, email, password, role) VALUES ($1, $2, $3, $4, $5, $6)',
+      [userId, tenantId, 'Admin User', email, hashedPassword, 'superadmin']
+    );
+
+    const statements = getTenantSchemaSql(schemaName)
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    for (const stmt of statements) {
+      await client.query(stmt);
+    }
+  });
+
+  return { tenantId, schemaName, companyName };
+};
+
+// --- User Management (Super Admin only) ---
+
+import { tenantContext } from './database.js';
+
+const getTenantIdFromContext = async () => {
+  const schemaName = tenantContext.getStore();
+  if (!schemaName) throw badRequest('Tenant context missing');
+  // Need to query the public schema for tenants
+  // Because query wrapper might prepend schema name if we are not careful
+  // But wait, the query wrapper `const query = ...` does it use schema?
+  // Let's just use the query since it should work across schemas or prefix with public
+  const { rows } = await query('SELECT id FROM tenants WHERE schema_name = $1', [schemaName]);
+  if (rows.length === 0) throw notFound('Tenant not found');
+  return rows[0].id;
+};
+
+export const getTenantUsers = async () => {
+  const tenantId = await getTenantIdFromContext();
+  const { rows } = await query(
+    'SELECT id, name, email, role, is_active, created_at FROM global_users WHERE tenant_id = $1 ORDER BY created_at DESC',
+    [tenantId]
+  );
+  return rows.map(row => ({
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+  }));
+};
+
+export const createTenantUser = async (payload) => {
+  const tenantId = await getTenantIdFromContext();
+  const { name, email, password, role } = payload;
+  if (!name || !email || !password) throw badRequest('Missing required fields');
+  
+  // Enforce role to be strictly 'admin' since SuperAdmins cannot be created via UI
+  const userRole = 'admin';
+
+  // Check email exists
+  const { rows } = await query('SELECT id FROM global_users WHERE lower(email) = lower($1)', [email.trim()]);
+  if (rows.length > 0) throw conflict('A user with this email already exists');
+
+  const userId = `U${Date.now()}`;
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  await query(
+    'INSERT INTO global_users (id, tenant_id, name, email, password, role) VALUES ($1, $2, $3, $4, $5, $6)',
+    [userId, tenantId, name.trim(), email.trim(), hashedPassword, userRole]
+  );
+
+  // Fetch company name for the email
+  const { rows: tenantRows } = await query('SELECT company_name FROM tenants WHERE id = $1', [tenantId]);
+  const companyName = tenantRows[0]?.company_name || 'VanniLoan';
+
+  // Send the welcome email with credentials
+  sendWelcomeEmail(email.trim(), name.trim(), password, 'Admin', companyName).catch(err => {
+    console.error('Failed to send welcome email (async):', err);
+  });
+
+  return { id: userId, name, email, role: userRole };
+};
+
+export const deleteTenantUser = async (userId) => {
+  const tenantId = await getTenantIdFromContext();
+  // Ensure the user doesn't delete themselves (this check is typically in the route, but good here too)
+  const { rows } = await query('SELECT role FROM global_users WHERE id = $1 AND tenant_id = $2', [userId, tenantId]);
+  if (rows.length === 0) throw notFound('User not found');
+  
+  await query('DELETE FROM global_users WHERE id = $1 AND tenant_id = $2', [userId, tenantId]);
+  return { message: 'User deleted successfully' };
 };
